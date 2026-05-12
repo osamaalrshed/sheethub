@@ -1,0 +1,182 @@
+/* Logo rebrand is handled by admin-detector.js (uses page's own fonts) */
+
+/* ────────────────────────────────────────────────────────────────────────────
+   NocoDB UI customizations for business users.
+   All rules are scoped to `body:not(.is-admin)` — admin-detector.js adds the
+   `is-admin` class to <body> when an admin user is detected, which disables
+   every hide rule below and gives the admin the full NocoDB UI.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+body:not(.is-admin) [data-testid="share-base-button"] { display: none !important; }
+
+/* Hide view types we do not want: Gallery, Kanban, Calendar, Map */
+body:not(.is-admin) [data-testid="create-gallery-view"],
+body:not(.is-admin) [data-testid="create-kanban-view"],
+body:not(.is-admin) [data-testid="create-calendar-view"],
+body:not(.is-admin) [data-testid="create-map-view"],
+body:not(.is-admin) [data-testid="sidebar-view-create-gallery"],
+body:not(.is-admin) [data-testid="sidebar-view-create-kanban"],
+body:not(.is-admin) [data-testid="sidebar-view-create-calendar"],
+body:not(.is-admin) [data-testid="sidebar-view-create-map"] { display: none !important; }
+
+/* Attachment column type (in field type picker) */
+body:not(.is-admin) [data-testid="nc-column-type-Attachment"],
+body:not(.is-admin) [data-testid="ncDropdownOption-Attachment"] { display: none !important; }
+
+/* Webhooks, API tokens, ERD, Audit, Snapshots */
+body:not(.is-admin) [data-testid="nc-sidebar-webhook"],
+body:not(.is-admin) [data-testid="nc-sidebar-api-tokens"],
+body:not(.is-admin) [data-testid="nc-sidebar-erd"],
+body:not(.is-admin) [data-testid="nc-sidebar-audit"],
+body:not(.is-admin) [data-testid="nc-sidebar-snapshots"],
+body:not(.is-admin) [data-testid="nc-base-options-webhook"],
+body:not(.is-admin) [data-testid="nc-base-options-api-tokens"],
+body:not(.is-admin) [data-testid="nc-base-options-erd"],
+body:not(.is-admin) [data-testid="nc-base-options-audit"] { display: none !important; }
+
+/* Schema-edit buttons in column header (+) */
+body:not(.is-admin) [data-testid="nc-add-column"],
+body:not(.is-admin) [data-testid="nc-field-add"],
+body:not(.is-admin) [data-testid="nc-grid-add-column"] { display: none !important; }
+
+/* The entire "Add / Edit field" dialog form */
+body:not(.is-admin) [data-testid="add-or-edit-column"] { display: none !important; }
+
+/* Column header dropdown menu: hide schema-modifying items.
+   Keep: Hide field, Set as display value, Sort, Filter. */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-edit),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-duplicate),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-edit-description),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-field-permissions),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-groupby),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-insert-after),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-insert-before),
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-column-delete) { display: none !important; }
+
+/* Create new workspace / base / table buttons */
+body:not(.is-admin) [data-testid="nc-home-sidebar-create-ws"],
+body:not(.is-admin) [data-testid="nc-sidebar-add-base"],
+body:not(.is-admin) [data-testid="nc-create-base"],
+body:not(.is-admin) [data-testid="nc-home-create-new-btn"] { display: none !important; }
+
+/* Base overview "quick actions" panel — hide all create/import buttons.
+   Import data is still reachable via the base options dropdown. */
+body:not(.is-admin) .nc-overview-actions { display: none !important; }
+
+/* "Create Table" inline button (constrained: must have the brand text color
+   class and a child div with text, so it doesn't match grid cells or +
+   buttons elsewhere with the same plus icon) */
+body:not(.is-admin) div.cursor-pointer[class*="text-nc-content-brand"]:has(> div > svg path[d="M8 3.33301V12.6663"]) { display: none !important; }
+
+/* "Free Plan" badge — pill-shaped div with bg-nc-bg-gray-light + uppercase span */
+body:not(.is-admin) div.rounded-full.bg-nc-bg-gray-light:has(> span.uppercase) { display: none !important; }
+
+/* View actions menu (per-view "..." dropdown) — keep only Download */
+/* Duplicate view (matched by its unique CSS class on the icon) */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-view-copy-icon) { display: none !important; }
+/* Delete view */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(.nc-view-delete-icon) { display: none !important; }
+/* Rename view — pencil-icon SVG path */
+body:not(.is-admin) [data-testid^="view-sidebar-view-actions-"] li.ant-dropdown-menu-item:has(svg path[d^="M8 13.3334H14"]) { display: none !important; }
+/* Edit description — four-lines SVG path */
+body:not(.is-admin) [data-testid^="view-sidebar-view-actions-"] li.ant-dropdown-menu-item:has(svg path[d^="M11.3333 12H2"]) { display: none !important; }
+/* Change icon (class on the li) */
+body:not(.is-admin) li.nc-menu-item-change-icon { display: none !important; }
+/* Move to... submenu — arrow-right icon */
+body:not(.is-admin) li.ant-dropdown-menu-submenu:has(svg path[d="M3.33331 8H12.6666"]) { display: none !important; }
+/* Upload submenu — match by upload-arrow SVG path (downward V is download, upward V is upload) */
+body:not(.is-admin) li.ant-dropdown-menu-submenu:has(svg path[d^="M11.3333 5.33333L8 2"]) { display: none !important; }
+/* View mode submenu — match by users-group icon */
+body:not(.is-admin) li.ant-dropdown-menu-submenu:has(svg path[d^="M15.3333 14V12.6667"]) { display: none !important; }
+/* Disabled Business-tier items in this menu (Copy view config, Assign as personal view) */
+body:not(.is-admin) [data-testid^="view-sidebar-view-actions-"] li.ant-dropdown-menu-item-disabled { display: none !important; }
+
+/* Base options dropdown — hide most items, keep only "Import data" */
+body:not(.is-admin) [data-testid="nc-sidebar-base-rename"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-starred"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-duplicate"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-create-sandbox"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-migrate-to-v3"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-copy-base-info"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-relations"],
+body:not(.is-admin) [data-testid="nc-sidebar-mcp-server"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-rest-apis"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-settings"],
+body:not(.is-admin) [data-testid="nc-sidebar-base-delete"] { display: none !important; }
+
+/* Sub-base / data source dropdown (different testid prefix: nc-base-node-) */
+body:not(.is-admin) [data-testid="nc-base-node-rename"],
+body:not(.is-admin) [data-testid="nc-base-node-starred"],
+body:not(.is-admin) [data-testid="nc-base-node-duplicate"],
+body:not(.is-admin) [data-testid="nc-base-node-erd"],
+body:not(.is-admin) [data-testid="nc-base-node-settings"] { display: none !important; }
+
+/* Source-level dropdown (data source menu in sidebar) — hide Rename and Relations */
+body:not(.is-admin) [data-testid="nc-sidebar-source-rename"] { display: none !important; }
+/* Relations item — match by its unique ERD-icon SVG path */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(svg path[d="M6 4H10M6 6H7C7.55228 6 8 6.44772 8 7V11C8 11.5523 8.44772 12 9 12H10M12 6V10"]) { display: none !important; }
+
+/* Empty "Untitled" doc placeholder from NocoDB Docs feature */
+body:not(.is-admin) [data-testid="view-sidebar-doc-Untitled"],
+body:not(.is-admin) [data-testid="doc-item"],
+body:not(.is-admin) [data-testid="sidebar-doc-title"] { display: none !important; }
+
+/* Drag handles for tables (prevent reorder) */
+body:not(.is-admin) [data-testid^="tree-view-table-draggable-handle-"] { display: none !important; }
+
+/* Create-view button next to each table (force single grid view) */
+body:not(.is-admin) [data-testid="nc-sidebar-table-create-view-btn"] { display: none !important; }
+
+/* Topbar history/audit button */
+body:not(.is-admin) [data-testid="nc-topbar-history-btn"] { display: none !important; }
+
+/* Left rail icons — hide everything except Data panel */
+body:not(.is-admin) [data-panel="workflows"],
+body:not(.is-admin) [data-panel="settings"],
+body:not(.is-admin) [data-panel="activity"],
+body:not(.is-admin) [data-panel="help"],
+body:not(.is-admin) [data-panel="automations"] { display: none !important; }
+
+/* Fallback: any other nc-mini-sidebar button beyond the first */
+body:not(.is-admin) .nc-mini-sidebar-btn-full-width:not(:first-of-type) { display: none !important; }
+
+/* Plus button in mini sidebar */
+body:not(.is-admin) .nc-mini-sidebar-plus-btn { display: none !important; }
+
+/* Bottom section: "Try NocoDB Cloud" + Help + Version label */
+body:not(.is-admin) .nc-sidebar-bottom-section { display: none !important; }
+
+/* Top tabs: hide Details (schema view) — match by its unique SVG attribute */
+body:not(.is-admin) .tab:has(svg[stroke="transparent"]) { display: none !important; }
+
+/* Settings tab (gear icon) — match by unique gear-teeth SVG path */
+body:not(.is-admin) .tab-title:has(svg path[d^="M12.7091 9.90909"]),
+body:not(.is-admin) .tab:has(svg path[d^="M12.7091 9.90909"]) { display: none !important; }
+
+/* Topbar extension/integration button */
+body:not(.is-admin) [data-testid="nc-topbar-extension-btn"] { display: none !important; }
+
+/* Topbar clock-icon history button (matched by unique SVG path) */
+body:not(.is-admin) button:has(svg path[d^="M2 8a6 6 0 1 0 6-6"]) { display: none !important; }
+
+/* Top-right icons: history, customize */
+body:not(.is-admin) [data-testid="nc-topbar-history"],
+body:not(.is-admin) [data-testid="nc-topbar-settings"],
+body:not(.is-admin) [data-testid="nc-topbar-customize"] { display: none !important; }
+
+/* Toolbar: hide Group and Colour (keep Fields, Filter, Sort, Row height, ...) */
+body:not(.is-admin) .nc-group-by-menu-btn,
+body:not(.is-admin) .nc-coloring-menu-btn { display: none !important; }
+
+/* User profile menu — keep ONLY Log Out */
+body:not(.is-admin) [data-testid="nc-sidebar-keyboard-shortcuts"],
+body:not(.is-admin) [data-testid="nc-sidebar-user-theme"],
+body:not(.is-admin) li.lang-menu,
+body:not(.is-admin) a[href="/account/tokens"],
+body:not(.is-admin) a[href="/account/profile"] { display: none !important; }
+
+/* Dock Mode (no testid — match by its unique screen-icon SVG path) */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(svg path[d^="M13.1667 2H3.83333"]) { display: none !important; }
+
+/* Experimental Features (no testid — match by its unique lightbulb-icon SVG path) */
+body:not(.is-admin) li.ant-dropdown-menu-item:has(svg path[d^="M6.07449 13.9231"]) { display: none !important; }

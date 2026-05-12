@@ -1,0 +1,39 @@
+# Secrets — never commit
+.env
+
+# Backup files
+backups/
+*.bak
+*.sql.gz
+
+# Docker volumes (if accidentally mapped into the tree)
+postgres_data/
+nocodb_data/
+sqlserver_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Portable stack — binaries are downloaded per machine, data is runtime-only
+portable/_bin/
+portable/data/
+
+# Dev artifacts (extracted images used during development)
+original-logo.png
+nocodb-logo-original.png

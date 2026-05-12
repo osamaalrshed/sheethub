@@ -1,0 +1,15 @@
+# Tables to sync from PostgreSQL -> ClickHouse.
+# Format: "schema.table"
+# Only tables with entries in audit.change_log since the last successful sync
+# will actually be reloaded — others are skipped to save time.
+
+tables:
+  - finance.cost_centers
+  - finance.budget_targets
+  - sales.regional_targets
+  - sales.partner_commissions
+  - operations.vendor_master
+  - operations.maintenance_schedules
+
+# Schedule
+interval_seconds: 3600   # 1 hour
