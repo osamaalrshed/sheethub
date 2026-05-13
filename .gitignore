@@ -37,3 +37,6 @@ portable/data/
 # Dev artifacts (extracted images used during development)
 original-logo.png
 nocodb-logo-original.png
+
+# Zips of subfolders made for transferring to other machines
+*.zip

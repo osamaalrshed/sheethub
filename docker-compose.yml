@@ -34,6 +34,23 @@ services:
       retries: 5
       start_period: 10s
 
+  # ── Postgres → Postgres realtime sync (polls audit.change_log every 2s) ────
+  realtime-sync:
+    build: ./realtime-sync
+    container_name: nocodb-realtime-sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PG_HOST:     postgres
+      PG_PORT:     5432
+      PG_USER:     ${POSTGRES_NOCODB_USER}
+      PG_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
+      PG_DATABASE: business_inputs
+    networks:
+      - nocodb-net
+
   # ── Postgres → ClickHouse sync service ──────────────────────────────────────
   sync:
     build: ./sync-service
