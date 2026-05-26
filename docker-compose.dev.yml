@@ -1,0 +1,27 @@
+# Dev-only optional services. Compose this on top of the main file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Includes:
+#   - realtime-sync: a 2-second poll Postgres → Postgres incremental sync.
+#     Useful for demonstrating real-time replication during development;
+#     not used in production (where the 30-minute Postgres → ClickHouse
+#     sync handles analytics).
+
+services:
+
+  realtime-sync:
+    build: ./realtime-sync
+    container_name: sheetshub-realtime-sync
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PG_HOST:     postgres
+      PG_PORT:     5432
+      PG_USER:     ${POSTGRES_NOCODB_USER}
+      PG_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
+      PG_DATABASE: business_inputs
+    networks:
+      - sheetshub-net

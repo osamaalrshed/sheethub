@@ -1,242 +1,196 @@
-# NocoDB Business Inputs POC
+# SheetsHub
 
-A self-contained Docker Compose stack that puts **NocoDB** (spreadsheet UI) on top of **PostgreSQL** (business data).
+A Dockerized business-data platform: business users edit data in a spreadsheet
+UI ([NocoDB](https://github.com/nocodb/nocodb)) backed by PostgreSQL, with
+every change auto-synced to ClickHouse every 30 minutes for analytics.
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Business User (browser)                             │
-│       │   edits rows via NocoDB UI                  │
-│       ▼                                              │
-│  ┌──────────┐    reads/writes    ┌─────────────────┐ │
-│  │  NocoDB  │◄──────────────────►│   PostgreSQL    │ │
-│  │  :8080   │                    │  nocodb_meta    │ │
-│  └──────────┘                    │  business_inputs│ │
-│                                  │  ├─ finance.*   │ │
-│                                  │  ├─ sales.*     │ │
-│                                  │  └─ operations.*│ │
-│                                  └─────────────────┘ │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│ Business user (browser)         http://<your-host>:8080          │
+└──────────────────────┬───────────────────────────────────────────┘
+                       ▼
+              ┌──────────────────┐
+              │  nginx           │  CSS + JS overlay (SheetsHub
+              │  reverse proxy   │  branding, hide admin UI from
+              └────────┬─────────┘  business users, block public
+                       │            share URLs)
+                       ▼
+              ┌──────────────────┐
+              │  NocoDB          │  Pinned 2026.05.0
+              └────────┬─────────┘
+                       │
+                       ▼
+              ┌──────────────────┐
+              │  PostgreSQL 16   │  Operational store
+              │                  │   - nocodb_meta
+              │                  │   - business_inputs
+              │                  │       (finance / sales / operations)
+              │                  │   - audit.change_log
+              └────────┬─────────┘
+                       │  every 30 min, only changed tables
+                       ▼
+              ┌──────────────────┐
+              │  ClickHouse      │  Analytics store
+              └──────────────────┘  (external — outside this compose)
 ```
 
-> SQL Server sync is planned for a later phase. The `sync/` directory contains the ETL service code for when you're ready.
-
+---
 
 ## Prerequisites
 
 | Platform | Requirement |
-|----------|-------------|
+|---|---|
 | Windows / macOS | [Docker Desktop](https://www.docker.com/products/docker-desktop/) ≥ 4.x |
-| Linux | Docker Engine ≥ 24 + [Compose plugin](https://docs.docker.com/compose/install/linux/) |
+| Linux server    | Docker Engine ≥ 24 + [Compose plugin](https://docs.docker.com/compose/install/linux/) |
 
-For the setup script (local only — not needed inside Docker):
+External: a ClickHouse instance the sync service can reach (or skip if you
+don't need analytics sync yet — the rest of the stack works without it).
 
-- Python 3.11+
+---
 
-> **Ports used:** 5432 (Postgres), 8080 (NocoDB).  
-> To remap either port, set `POSTGRES_PORT` or `NOCODB_PORT` in your `.env`.
-
-
-## Setup
-
-### 1. Configure secrets
+## Quick start
 
 ```bash
+git clone https://github.com/osamaalrshed/sheethub.git
+cd sheethub
 cp .env.example .env
-```
-
-Open `.env` and replace every `CHANGE_ME_*` value:
-
-| Variable | Description |
-|----------|-------------|
-| `POSTGRES_SUPERUSER_PASSWORD` | PostgreSQL superuser password |
-| `POSTGRES_NOCODB_PASSWORD` | NocoDB app user password |
-| `ETL_READER_PASSWORD` | Read-only user password (for future sync) |
-| `NC_AUTH_JWT_SECRET` | Random 32+ char string for JWT signing |
-| `NC_ADMIN_EMAIL` | Admin login email for NocoDB |
-| `NC_ADMIN_PASSWORD` | Admin password (8+ chars, uppercase, number, special) |
-| `TEST_USER_PASSWORD` | Shared password for the three test users |
-
-Generate a JWT secret:
-```bash
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-### 2. Start the stack
-
-```bash
+# edit .env — replace every CHANGE_ME_ value
 docker compose up -d
 ```
 
-Check status:
-```bash
-docker compose ps
-docker compose logs -f nocodb   # watch NocoDB startup (~30s)
-```
+NocoDB will be ready in ~30 seconds at `http://localhost:8080`. Sign in with
+the admin credentials from `.env`.
 
-Both services should show `healthy` before proceeding.
+---
 
-### 3. Run the workspace setup script
+## What runs
 
-```bash
-cd setup
-pip install -r requirements.txt
-python setup_nocodb.py
-```
+| Service | Container | Port | Purpose |
+|---|---|---|---|
+| `postgres`  | `sheetshub-postgres` | `5432`* | Operational DB + NocoDB metadata + audit log |
+| `nocodb`    | `sheetshub-nocodb`   | internal `8080` | Spreadsheet UI |
+| `nginx`     | `sheetshub-nginx`    | `8080`* | Reverse proxy + UI overlay |
+| `sync`      | `sheetshub-sync`     | — | Postgres → ClickHouse, every 30 min |
 
-The script:
-- Signs in to NocoDB with your admin credentials
-- Creates three bases: **Finance**, **Sales**, **Operations** — each connected to the matching PostgreSQL schema
-- Creates test users and assigns them as Editor on their respective base
+\* Configurable via `POSTGRES_PORT` and `NOCODB_PORT` in `.env`.
 
-> If base creation fails via API, the script prints step-by-step manual instructions for the NocoDB UI.
+---
 
+## How it works end-to-end
 
-## Access
+1. **A user edits a row** in NocoDB through the browser
+2. **NocoDB writes to PostgreSQL** (data lives in `business_inputs.{finance,sales,operations}.*`)
+3. **PostgreSQL triggers** capture the change in `audit.change_log` (`old_data`, `new_data`, `action`, `changed_at`)
+4. **Every 30 minutes**, the `sync` service polls `audit.change_log` per table — if there's been any activity since last sync, it drops and reloads the matching ClickHouse table; otherwise skips
+5. **Analytics queries** run against ClickHouse, never against the operational PostgreSQL
 
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| NocoDB (admin) | http://localhost:8080 | `NC_ADMIN_EMAIL` / `NC_ADMIN_PASSWORD` from `.env` |
-| NocoDB — Finance | http://localhost:8080 | `finance@test.local` / `TEST_USER_PASSWORD` |
-| NocoDB — Sales | http://localhost:8080 | `sales@test.local` / `TEST_USER_PASSWORD` |
-| NocoDB — Operations | http://localhost:8080 | `ops@test.local` / `TEST_USER_PASSWORD` |
-| PostgreSQL | `localhost:5432` | `postgres` / `POSTGRES_SUPERUSER_PASSWORD` |
+The 30-minute interval is set in [`sync-service/config.yaml`](sync-service/config.yaml). Change it and restart the `sync` container.
 
+---
 
-## Verify the data
-
-Connect to PostgreSQL and inspect the sample data:
-
-```bash
-docker compose exec postgres psql -U postgres -d business_inputs \
-  -c "\dt finance.*" \
-  -c "\dt sales.*" \
-  -c "\dt operations.*"
-```
-
-Or query a specific table:
-
-```bash
-docker compose exec postgres psql -U postgres -d business_inputs \
-  -c "SELECT * FROM finance.cost_centers;"
-```
-
-
-## Backup & Restore
-
-### Run a backup
-
-```bash
-./scripts/backup.sh
-```
-
-Creates timestamped files in `./backups/`:
-- `pg-nocodb_meta-<ts>.sql`
-- `pg-business_inputs-<ts>.sql`
-
-### Restore from backup
-
-```bash
-./scripts/restore.sh backups/pg-business_inputs-20240115-020000.sql
-```
-
-> Restoring `nocodb_meta` requires stopping NocoDB first — the script reminds you.
-
-### Suggested daily cron (Linux/macOS)
-
-```bash
-crontab -e
-# Add:
-0 2 * * * /absolute/path/to/nocodb-poc/scripts/backup.sh >> /absolute/path/to/nocodb-poc/backups/backup.log 2>&1
-```
-
-
-## Manual base creation fallback
-
-If `setup_nocodb.py` cannot create bases automatically via API:
-
-1. Sign in at http://localhost:8080 as admin.
-2. Click **New Base** → **Connect External Database**.
-3. Fill in:
-   - **Host**: `postgres` (NocoDB reaches Postgres by Docker service name)
-   - **Port**: `5432`
-   - **Database**: `business_inputs`
-   - **Schema**: `finance` (repeat for `sales` and `operations`)
-   - **User**: `nocodb_user`
-   - **Password**: value of `POSTGRES_NOCODB_PASSWORD` from `.env`
-4. Click **Test Connection**, then **Add Source**.
-5. In each base → **Settings → Members**, invite the corresponding user as Editor:
-   - Finance → `finance@test.local`
-   - Sales → `sales@test.local`
-   - Operations → `ops@test.local`
-
-
-## Project structure
+## Project layout
 
 ```
-nocodb-poc/
-├── docker-compose.yml           # postgres + nocodb
-├── .env.example                 # copy to .env and fill secrets
-├── .gitignore
-├── postgres/
-│   └── init/
-│       ├── 01-create-databases.sh   # creates nocodb_meta + business_inputs
-│       ├── 02-create-users.sh       # creates nocodb_user + etl_reader
-│       └── 03-load-sample-data.sql  # 3 schemas, 6 tables, ~115 rows
-├── setup/
+sheethub/
+├── docker-compose.yml          ← production stack (postgres, nocodb, nginx, sync)
+├── docker-compose.dev.yml      ← optional dev-only services (realtime PG→PG sync)
+├── .env.example                ← copy to .env, fill in secrets
+├── README.md                   ← you are here
+├── DEPLOYMENT.md               ← production deployment guide
+├── CUSTOMIZATIONS.md           ← reference of every UI/data customization
+│
+├── nginx/
+│   ├── nocodb.conf             ← reverse-proxy config
+│   ├── custom.css              ← UI hides (scoped to body:not(.is-admin))
+│   └── admin-detector.js       ← admin detection + SheetsHub logo replacement
+│
+├── postgres/init/              ← runs on first DB startup
+│   ├── 01-create-databases.sh
+│   ├── 02-create-users.sh
+│   ├── 03-load-sample-data.sql
+│   ├── 04-audit.sql            ← audit.change_log + triggers
+│   └── 05-analytics-schema.sql ← analytics schema (used by dev realtime-sync)
+│
+├── setup/                      ← one-time NocoDB workspace setup (Python)
 │   ├── requirements.txt
-│   └── setup_nocodb.py          # NocoDB API automation
-├── sync/                        # SQL Server ETL — wired up in a later phase
+│   └── setup_nocodb.py
+│
+├── sync-service/               ← production sync (Postgres → ClickHouse, 30 min)
 │   ├── Dockerfile
 │   ├── requirements.txt
+│   ├── config.yaml
 │   └── sync.py
+│
+├── realtime-sync/              ← dev tool — 2-second PG → PG incremental sync
+│   ├── Dockerfile              ← same shape as sync-service
+│   ├── requirements.txt
+│   ├── config.yaml
+│   ├── sync.py
+│   └── README.md
+│
 ├── scripts/
 │   ├── backup.sh
 │   └── restore.sh
-├── backups/                     # gitignored
-└── README.md
+│
+└── portable/                   ← optional: run the stack without Docker
+    ├── README.md               ← how to run it on Windows with downloaded binaries
+    └── ...
 ```
 
+---
 
-## Moving to a Linux server
+## Common operations
 
 ```bash
-# 1. Install Docker + Compose plugin
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER   # log out and back in
-
-# 2. Copy the project (including your .env)
-scp -r ./nocodb-poc user@server:/opt/nocodb-poc
-
-# 3. Fix script permissions (Git may strip the executable bit)
-chmod +x /opt/nocodb-poc/postgres/init/*.sh /opt/nocodb-poc/scripts/*.sh
-
-# 4. Start
-cd /opt/nocodb-poc
+# Start
 docker compose up -d
-```
 
-**Gotchas:**
-
-| Issue | Fix |
-|-------|-----|
-| NocoDB image tag `2026.05.0` not found | Use `latest` or check [Docker Hub tags](https://hub.docker.com/r/nocodb/nocodb/tags) |
-| Port 5432 or 8080 already in use | Set `POSTGRES_PORT` / `NOCODB_PORT` in `.env` |
-| `backups/` permission errors | `chmod 777 backups/` on the host |
-
-
-## Useful commands
-
-```bash
-# Tail all logs
-docker compose logs -f
-
-# Inspect tables in business_inputs
-docker compose exec postgres psql -U postgres -d business_inputs \
-  -c "SELECT table_schema, table_name, (SELECT count(*) FROM information_schema.columns c WHERE c.table_schema=t.table_schema AND c.table_name=t.table_name) AS cols FROM information_schema.tables t WHERE table_schema NOT IN ('pg_catalog','information_schema','public') ORDER BY 1,2;"
-
-# Stop everything (volumes preserved)
+# Stop (preserve data)
 docker compose down
 
-# Destroy everything including data volumes (⚠ irreversible)
+# View logs (all services)
+docker compose logs -f
+
+# View logs for one service
+docker compose logs -f sync
+
+# Force a manual sync run (don't wait for the 30-minute timer)
+docker compose exec sync python sync.py --once
+
+# Connect to PostgreSQL
+docker compose exec postgres psql -U postgres -d business_inputs
+
+# Inspect audit log
+docker compose exec postgres psql -U postgres -d business_inputs -c \
+  "SELECT changed_at, action, table_schema, table_name FROM audit.change_log ORDER BY id DESC LIMIT 10;"
+
+# Wipe everything including data volumes (irreversible)
 docker compose down -v
 ```
+
+---
+
+## Backups
+
+```bash
+# Run a backup (creates timestamped SQL dumps in ./backups/)
+./scripts/backup.sh
+
+# Restore from backup
+./scripts/restore.sh backups/pg-business_inputs-20260514-020000.sql
+
+# Schedule daily backups via cron
+crontab -e
+# 0 2 * * * /opt/sheethub/scripts/backup.sh >> /opt/sheethub/backups/backup.log 2>&1
+```
+
+---
+
+## Next steps
+
+| If you want to … | Read |
+|---|---|
+| Deploy to a server | [DEPLOYMENT.md](DEPLOYMENT.md) |
+| Understand every UI/data customization | [CUSTOMIZATIONS.md](CUSTOMIZATIONS.md) |
+| Demo near-real-time PG → PG replication | [realtime-sync/README.md](realtime-sync/README.md) |
+| Run without Docker (no admin needed) | [portable/README.md](portable/README.md) |

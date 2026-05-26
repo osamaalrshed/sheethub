@@ -1,84 +1,83 @@
-# NocoDB Business Inputs POC
-# Docker Compose v2 syntax — run with: docker compose up -d
+# SheetsHub — production Docker Compose stack.
 #
-# NocoDB image: check https://hub.docker.com/r/nocodb/nocodb/tags for the latest pinned tag.
-# If 2026.05.0 is unavailable, replace with the newest available tag or use "latest".
+# Services (in startup order):
+#   postgres → nocodb → nginx
+#                  ↓
+#                 sync (Postgres → ClickHouse, every 30 min)
+#
+# To run:                      docker compose up -d
+# To stop:                     docker compose down
+# To stop and wipe data:       docker compose down -v   (irreversible!)
+# To view logs:                docker compose logs -f [service]
+#
+# Optional dev-only services live in `docker-compose.dev.yml`:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # ── PostgreSQL — operational data + NocoDB metadata + audit log ──────────
   postgres:
     image: postgres:16
-    container_name: nocodb-postgres
+    container_name: sheetshub-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_SUPERUSER}
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      POSTGRES_DB: postgres
-      # Passed through to init scripts so they can create app users
-      POSTGRES_NOCODB_USER: ${POSTGRES_NOCODB_USER}
+      POSTGRES_USER:         ${POSTGRES_SUPERUSER}
+      POSTGRES_PASSWORD:     ${POSTGRES_SUPERUSER_PASSWORD}
+      POSTGRES_DB:           postgres
+      # Passed through to init scripts to create app users
+      POSTGRES_NOCODB_USER:     ${POSTGRES_NOCODB_USER}
       POSTGRES_NOCODB_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
-      ETL_READER_USER: ${ETL_READER_USER}
-      ETL_READER_PASSWORD: ${ETL_READER_PASSWORD}
+      ETL_READER_USER:          ${ETL_READER_USER}
+      ETL_READER_PASSWORD:      ${ETL_READER_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     networks:
-      - nocodb-net
+      - sheetshub-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER} -d postgres"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout:  5s
+      retries:  5
       start_period: 10s
 
-  # ── Postgres → Postgres realtime sync (polls audit.change_log every 2s) ────
-  realtime-sync:
-    build: ./realtime-sync
-    container_name: nocodb-realtime-sync
+  # ── NocoDB — the spreadsheet UI ──────────────────────────────────────────
+  nocodb:
+    image: nocodb/nocodb:2026.05.0   # pinned — see CUSTOMIZATIONS.md
+    container_name: sheetshub-nocodb
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      PG_HOST:     postgres
-      PG_PORT:     5432
-      PG_USER:     ${POSTGRES_NOCODB_USER}
-      PG_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
-      PG_DATABASE: business_inputs
+      # Metadata DB — NocoDB stores its own config here
+      NC_DB:                       "pg://postgres:5432?u=${POSTGRES_NOCODB_USER}&p=${POSTGRES_NOCODB_PASSWORD}&d=nocodb_meta"
+      NC_AUTH_JWT_SECRET:          ${NC_AUTH_JWT_SECRET}
+      NC_ADMIN_EMAIL:              ${NC_ADMIN_EMAIL}
+      NC_ADMIN_PASSWORD:           ${NC_ADMIN_PASSWORD}
+      NC_PUBLIC_URL:               ${NC_PUBLIC_URL}
+      NC_ALLOW_LOCAL_HOOK_URL:     "true"
+      NC_ALLOW_LOCAL_EXTERNAL_DBS: "true"
+      NC_DISABLE_SHARING:          "true"
+      NC_ATTACHMENT_FIELD_SIZE:    "52428800"   # 50 MB
+      NC_REQUEST_BODY_SIZE:        "52428800"   # 50 MB
+    volumes:
+      - nocodb_data:/usr/app/data
     networks:
-      - nocodb-net
+      - sheetshub-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/health || exit 1"]
+      interval: 15s
+      timeout:  10s
+      retries:  8
+      start_period: 30s
 
-  # ── Postgres → ClickHouse sync service ──────────────────────────────────────
-  sync:
-    build: ./sync-service
-    container_name: nocodb-sync
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      PG_HOST:     postgres
-      PG_PORT:     5432
-      PG_USER:     ${POSTGRES_NOCODB_USER}
-      PG_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
-      PG_DATABASE: business_inputs
-      CH_HOST:     host.docker.internal   # ClickHouse runs on the Windows host
-      CH_PORT:     8123
-      CH_USER:     default
-      CH_PASSWORD: ""
-      CH_DATABASE: default
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - nocodb-net
-
-  # ── nginx reverse proxy — blocks public share URLs ──────────────────────────
+  # ── nginx reverse proxy — CSS+JS overlay, blocks public share URLs ──────
   nginx:
     image: nginx:alpine
-    container_name: nocodb-nginx
+    container_name: sheetshub-nginx
     restart: unless-stopped
     depends_on:
       nocodb:
@@ -90,48 +89,41 @@ services:
     ports:
       - "${NOCODB_PORT:-8080}:80"
     networks:
-      - nocodb-net
+      - sheetshub-net
 
-  # ── NocoDB ──────────────────────────────────────────────────────────────────
-  nocodb:
-    image: nocodb/nocodb:2026.05.0
-    container_name: nocodb-app
+  # ── sync — Postgres → ClickHouse (every 30 minutes, audit-driven) ───────
+  sync:
+    build: ./sync-service
+    container_name: sheetshub-sync
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      # Metadata database — NocoDB stores its own config here
-      NC_DB: "pg://postgres:5432?u=${POSTGRES_NOCODB_USER}&p=${POSTGRES_NOCODB_PASSWORD}&d=nocodb_meta"
-      NC_AUTH_JWT_SECRET: ${NC_AUTH_JWT_SECRET}
-      # Pre-create the admin account so no manual UI wizard is needed
-      NC_ADMIN_EMAIL: ${NC_ADMIN_EMAIL}
-      NC_ADMIN_PASSWORD: ${NC_ADMIN_PASSWORD}
-      NC_ALLOW_LOCAL_HOOK_URL: "true"
-      NC_ALLOW_LOCAL_EXTERNAL_DBS: "true"
-      NC_DISABLE_SHARING: "true"
-      NC_PUBLIC_URL: "http://localhost:${NOCODB_PORT:-8080}"
-      # Upload size limits — keep aligned with nginx client_max_body_size
-      NC_ATTACHMENT_FIELD_SIZE: "52428800"   # 50 MB in bytes
-      NC_REQUEST_BODY_SIZE: "52428800"
-    volumes:
-      - nocodb_data:/usr/app/data
+      PG_HOST:     postgres
+      PG_PORT:     5432
+      PG_USER:     ${POSTGRES_NOCODB_USER}
+      PG_PASSWORD: ${POSTGRES_NOCODB_PASSWORD}
+      PG_DATABASE: business_inputs
+      CH_HOST:     ${CH_HOST}
+      CH_PORT:     ${CH_PORT}
+      CH_USER:     ${CH_USER}
+      CH_PASSWORD: ${CH_PASSWORD}
+      CH_DATABASE: ${CH_DATABASE}
+    # If ClickHouse runs on the host (not in this compose), uncomment:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     networks:
-      - nocodb-net
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 30s
+      - sheetshub-net
 
 volumes:
   postgres_data:
   nocodb_data:
 
 networks:
-  nocodb-net:
+  sheetshub-net:
     driver: bridge
     ipam:
       config:
+        # Custom subnet avoids NocoDB's SSRF block on internal IP ranges.
         - subnet: 100.64.0.0/24

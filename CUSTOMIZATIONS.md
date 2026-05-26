@@ -1,4 +1,4 @@
-# NocoDB POC — Customizations Reference
+# SheetsHub — Customizations Reference
 
 This file lists every non-default change made to NocoDB, what each does,
 and how to maintain it across NocoDB version upgrades.
@@ -10,7 +10,7 @@ and how to maintain it across NocoDB version upgrades.
 
 | URL | Who | UI |
 |---|---|---|
-| `http://localhost:8181` | Everyone | Restricted by default; admin sees full UI automatically |
+| `http://<host>:8080` (or your `NC_PUBLIC_URL`) | Everyone | Restricted by default; admin sees full UI automatically |
 
 **How the same URL serves two experiences:**
 
@@ -20,8 +20,9 @@ nginx injects two assets into every NocoDB page:
   and if the logged-in user matches an admin email, adds `is-admin` to `<body>`
   (which disables every hide rule)
 
-Admin emails are listed in `nginx/admin-detector.js` (`ADMIN_EMAILS = ['admin@nocodb.local']`).
+Admin emails are listed in `nginx/admin-detector.js` (`ADMIN_EMAILS = [...]`).
 Edit and restart nginx (`docker compose restart nginx`) to add more admins.
+Keep this list in sync with `NC_ADMIN_EMAIL` in `.env` for the default admin.
 
 **Trade-off:** Admin sees a brief flash (~100 ms) of the restricted UI on each page load
 before the detector finishes and the CSS unhides everything. Acceptable for the simpler
@@ -78,7 +79,8 @@ See `nginx/custom.css` for the actual selectors. Categories:
 - `NC_ATTACHMENT_FIELD_SIZE` and `NC_REQUEST_BODY_SIZE` env vars set to 50 MB
 
 ### URL construction
-- `NC_PUBLIC_URL` set to `http://localhost:8181` so exports generate working URLs
+- `NC_PUBLIC_URL` set in `.env` so NocoDB generates correct absolute URLs (file
+  downloads, share links). **Update this when deploying to a server.**
 
 ### Network
 - Docker subnet pinned to `100.64.0.0/24` to avoid private IP ranges NocoDB's SSRF
@@ -89,17 +91,28 @@ See `nginx/custom.css` for the actual selectors. Categories:
 - `audit` schema in `business_inputs`:
   - `audit.change_log` — every INSERT/UPDATE/DELETE on finance/sales/operations
   - Triggered automatically by `audit.log_change()` (SECURITY DEFINER)
-  - Captures `current_user` (db user) and `current_setting('app.user')` (NocoDB user, if set)
-- PostgreSQL auth changed to `md5` (was `scram-sha-256`) for client compatibility
-- Postgres port mapped to `5433` on host to avoid conflict with local PostgreSQL service
+- `analytics` schema (created by `05-analytics-schema.sql`):
+  - Mirror tables + `_sync_cursor` used by the optional `realtime-sync` dev service
+- PostgreSQL auth: default `scram-sha-256` works; switch to `md5` only if a
+  legacy client doesn't support SCRAM (we did this for an older DBeaver build)
+
+## Sync services
+
+| Service | Where it runs | Frequency | Purpose |
+|---|---|---|---|
+| **sync** (production) | `sheetshub-sync` container | every 30 min | Postgres → ClickHouse, audit-driven, truncate-and-reload only changed tables |
+| **realtime-sync** (dev) | `sheetshub-realtime-sync` (only via `docker-compose.dev.yml`) | every 2 s | Postgres → Postgres incremental replay of audit log |
+
+Both read from `audit.change_log` to determine what changed. Interval is in
+each service's `config.yaml`.
 
 ## Roles in use
 
 | Role | Where set | Who has it | What they can do |
 |---|---|---|---|
-| `owner` | `nc_base_users_v2.roles` | `admin@nocodb.local` | Everything (use 8182) |
-| `creator` | `nc_base_users_v2.roles` | Users who need upload | Upload CSV via UI (use 8181) |
-| `editor` | `nc_base_users_v2.roles` | Most business users | Read/edit rows (use 8181) |
+| `owner` | `nc_base_users_v2.roles` | `admin@sheetshub.local` | Full UI (via JS admin detector) |
+| `creator` | `nc_base_users_v2.roles` | Users who need CSV upload | Editor + Upload CSV via UI |
+| `editor` | `nc_base_users_v2.roles` | Most business users | Read/edit rows, paste from Excel |
 
 To promote a user from editor → creator:
 

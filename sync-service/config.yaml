@@ -11,5 +11,5 @@ tables:
   - operations.vendor_master
   - operations.maintenance_schedules
 
-# Schedule
-interval_seconds: 3600   # 1 hour
+# Schedule (production default: 30 minutes)
+interval_seconds: 1800   # 30 minutes
