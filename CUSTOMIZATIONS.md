@@ -109,11 +109,26 @@ ClickHouse queries should filter `_deleted = 0` and use `FINAL` (or
 `argMax(_version)`) to see the current row state. The sync service never
 issues `UPDATE` or `DELETE` against ClickHouse — append-only writes only.
 
-Each ClickHouse table has its own hand-crafted DDL under
-`sync-service/clickhouse_schemas/`. Engineers edit those files to tune
-`ORDER BY` / `PARTITION BY` for analytics access patterns. Adding a new
-table: add a DDL file + entry in `config.yaml`. See
-`sync-service/README.md` for the playbook.
+### Registry-driven configuration
+
+Tables to sync are listed in `sync_config.tables` (a Postgres table),
+not in code files. **Admin adds new tables via SQL only — no SSH, no
+container restart:**
+
+```sql
+CREATE TABLE marketing.campaigns (id SERIAL PRIMARY KEY, ...);
+SELECT audit.register_table('marketing', 'campaigns');
+```
+
+The sync container reads the registry on every cycle, introspects the
+source schema in `information_schema.columns`, generates a ClickHouse
+DDL with correct types (`Decimal` for `numeric`, `DateTime64(6, 'UTC')`
+for `timestamptz`, `Nullable(...)` for nullable columns), creates the
+CH table, and bootstraps current rows.
+
+`ORDER BY` defaults to the source primary key. For performance-critical
+tables, admin overrides `order_by` and `partition_by` in the registry
+row. See `sync-service/README.md` for the full playbook.
 
 ## Roles in use
 

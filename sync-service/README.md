@@ -1,155 +1,235 @@
-# sync-service — Postgres → ClickHouse incremental CDC
+# sync-service — registry-driven Postgres → ClickHouse incremental CDC
 
-## What it does
+## Architecture
 
-Every `interval_seconds` (default 1800 = 30 minutes):
-
-1. Reads new rows from `audit.change_log` per source table.
-2. For each change (INSERT / UPDATE / DELETE) **appends** a row to the
-   matching ClickHouse table with two extra columns:
-   - `_version` — the source change timestamp (`changed_at`)
-   - `_deleted` — `1` if the source row was deleted, `0` otherwise
-3. Updates the cursor in `sheetshub_sync_state` so we never re-apply a row.
-
-ClickHouse uses `ReplacingMergeTree(_version)` to collapse multiple
-versions of the same primary key in background merges. The service
-never issues `UPDATE` or `DELETE` against ClickHouse — append-only.
-
-## Why this pattern
-
-- **ClickHouse is optimized for appends, not for in-place updates.**
-  Sending UPDATE/DELETE statements would defeat its columnar design.
-- **Idempotent and replayable.** Re-applying the same audit range
-  produces the same final state (later versions win in merges).
-- **Incremental.** Only rows that actually changed are transferred —
-  scales independently of source table size.
-- **Auditable.** All historical versions remain in CH until merges
-  collapse them; you can query "what did this row look like yesterday"
-  by filtering on `_version`.
-
-This is the canonical pattern recommended by ClickHouse, Tinybird,
-Materialize, and most "Postgres CDC to ClickHouse" guides.
-
-## How queries work
-
-Always filter out tombstones and use `FINAL` (or `argMax`) to get the
-latest version of each row:
-
-```sql
--- Current state, hides deletes
-SELECT * FROM finance_cost_centers FINAL WHERE _deleted = 0;
-
--- Same idea without FINAL (faster for large tables)
-SELECT
-    argMax(name, _version)        AS name,
-    argMax(status, _version)      AS status,
-    argMax(updated_at, _version)  AS updated_at,
-    argMax(_deleted, _version)    AS deleted
-FROM finance_cost_centers
-GROUP BY code
-HAVING deleted = 0;
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ PostgreSQL                                                       │
+│                                                                  │
+│  sync_config.tables   ← registry                                 │
+│  ┌───────────────┬──────────────┬──────────────────┐             │
+│  │ source_schema │ source_table │ destination      │             │
+│  │ finance       │ cost_centers │ finance_cost_…   │             │
+│  │ ...           │              │                  │             │
+│  └───────────────┴──────────────┴──────────────────┘             │
+│                                                                  │
+│  audit.change_log     ← all INSERT/UPDATE/DELETE events           │
+└─────────────────────────────────────────────────────────────────┘
+                            │ every SYNC_INTERVAL_SECONDS (default 1800)
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ sync-service (Python container)                                  │
+│                                                                  │
+│  1. Read sync_config.tables                                      │
+│  2. For each table:                                              │
+│     - If CH table doesn't exist → introspect PG, generate DDL,   │
+│       CREATE TABLE IF NOT EXISTS in CH                           │
+│     - If never bootstrapped → bulk-copy current rows             │
+│     - Else: read audit.change_log since cursor, append           │
+│       rows to CH with _version + _deleted columns                │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+                       ClickHouse
+                  (ReplacingMergeTree)
 ```
 
-If your BI tool exposes raw SELECTs, wrap each base table in a view:
+The service is append-only. ClickHouse merges by `_version` in the
+background. Queries use `FINAL WHERE _deleted = 0` to see current state.
+
+---
+
+## Add a new table to sync — SQL only, no SSH
+
+From any DBeaver / psql session:
 
 ```sql
-CREATE VIEW v_finance_cost_centers AS
-SELECT * FROM finance_cost_centers FINAL WHERE _deleted = 0;
+-- 1. Create the source table (must have a PRIMARY KEY)
+CREATE TABLE marketing.campaigns (
+    id         SERIAL PRIMARY KEY,
+    name       VARCHAR(150) NOT NULL,
+    budget     NUMERIC(14, 2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 2. Register it for sync. This:
+--    - Validates the table exists and has a primary key
+--    - Attaches the audit trigger
+--    - Adds the registry row
+SELECT audit.register_table('marketing', 'campaigns');
 ```
+
+That's it. Within one sync interval (default 30 min), the sync container:
+
+1. Introspects `marketing.campaigns` columns from `information_schema`
+2. Generates the matching ClickHouse DDL with proper `Decimal` /
+   `DateTime64(6, 'UTC')` / `Nullable` types
+3. Creates the CH table (`ENGINE = ReplacingMergeTree(_version)`,
+   `ORDER BY` defaults to the source PK)
+4. Bootstrap-copies current rows
+5. Marks bootstrapped in `sync_config.tables.bootstrapped_at`
+6. From the next cycle onward, applies audit-log events incrementally
+
+To **force an immediate sync** instead of waiting:
+
+```bash
+docker compose exec sync python sync.py --once
+```
+
+---
+
+## Tune a table's ClickHouse schema
+
+The defaults (auto-generated DDL, `ORDER BY = primary key`, no partitioning)
+work fine for small tables. For large or hot tables you may want to tune.
+
+**Set the override BEFORE first sync** (recommended — gets used immediately):
+
+```sql
+SELECT audit.register_table(
+    'sales', 'huge_events',
+    'sales_huge_events',                   -- destination
+    '(event_date, customer_id, id)',       -- ORDER BY
+    'toYYYYMM(event_date)'                 -- PARTITION BY
+);
+```
+
+**Change AFTER first sync** (requires dropping the CH table and re-bootstrapping):
+
+```sql
+-- 1) Update the registry
+UPDATE sync_config.tables
+SET order_by    = '(event_date, customer_id, id)',
+    partition_by = 'toYYYYMM(event_date)'
+WHERE source_schema='sales' AND source_table='huge_events';
+
+-- 2) Drop the CH table and reset the cursor (in ClickHouse):
+--    DROP TABLE sales_huge_events;
+--    ALTER TABLE sheetshub_sync_state DELETE WHERE source_table='sales.huge_events';
+--
+-- Next sync recreates the table with the new DDL and re-bootstraps.
+```
+
+---
+
+## Operations
+
+### Pause a table
+
+```sql
+UPDATE sync_config.tables
+SET enabled = FALSE
+WHERE source_schema='X' AND source_table='Y';
+```
+
+CH data stays put; new audit entries accumulate. Set `enabled = TRUE`
+again and sync resumes from where it left off.
+
+### See what's being synced
+
+```sql
+SELECT source_schema, source_table, destination,
+       order_by, partition_by,
+       enabled, bootstrapped_at, last_synced_at
+FROM sync_config.tables
+ORDER BY source_schema, source_table;
+```
+
+### Run sync manually
+
+```bash
+docker compose exec sync python sync.py --once
+```
+
+Useful after registering a new table or for debugging.
+
+### Change the sync interval
+
+`SYNC_INTERVAL_SECONDS` env var (in `docker-compose.yml`). Default 1800.
+This is the only setting that still requires a container restart.
+
+---
+
+## Schema evolution
+
+**Adding a column** to a source table:
+
+1. `ALTER TABLE finance.cost_centers ADD COLUMN region TEXT;` in Postgres.
+2. Manually mirror the change in ClickHouse:
+   ```sql
+   ALTER TABLE finance_cost_centers ADD COLUMN region Nullable(String);
+   ```
+3. Next sync run picks up the new column automatically — sync re-introspects
+   the source on every cycle.
+
+**Dropping or renaming a column**: harder. Coordinate with downstream
+consumers, plan a migration window.
+
+---
+
+## How types are mapped (auto-generation)
+
+| Postgres                          | ClickHouse                       |
+|-----------------------------------|----------------------------------|
+| `smallint`                        | `Int16`                          |
+| `integer`                         | `Int32`                          |
+| `bigint`                          | `Int64`                          |
+| `real`                            | `Float32`                        |
+| `double precision`                | `Float64`                        |
+| `numeric(p, s)`                   | `Decimal(p, s)` ← precision kept |
+| `numeric` (unbounded)             | `Float64` (fallback)             |
+| `boolean`                         | `Bool`                           |
+| `date`                            | `Date`                           |
+| `timestamp`                       | `DateTime64(6)`                  |
+| `timestamp with time zone`        | `DateTime64(6, 'UTC')`           |
+| `uuid`                            | `UUID`                           |
+| `varchar`, `text`                 | `String`                         |
+| `char(n)` (n ≤ 16)                | `FixedString(n)`                 |
+| `json`, `jsonb`                   | `String`                         |
+| (NULL-able)                       | wrapped in `Nullable(...)`       |
+
+`_version DateTime64(6, 'UTC')` and `_deleted UInt8 DEFAULT 0` are appended
+to every table automatically.
+
+---
+
+## Failure modes
+
+| Failure | Behaviour |
+|---|---|
+| Postgres unreachable | Run aborts, retries next interval. No partial state. |
+| ClickHouse unreachable | Same — surface, retry. Cursor not advanced. |
+| Source has no PK | `register_table()` raises; sync skips the table if force-inserted into registry. |
+| Single table errors mid-run (e.g. weird type) | That table is skipped; others continue. Cursor unchanged for the failing one. |
+| Service restarted mid-run | Cursors are durable in CH; next start picks up where it left off. |
+| Source table dropped in PG | Sync errors when introspecting; `enabled = FALSE` to silence. |
+
+---
+
+## Limitations / known tech-debt
+
+- **No retry-with-backoff inside a run.** A transient CH blip wastes a
+  whole cycle. (Roadmap.)
+- **No auto-prune of `audit.change_log`.** It grows forever. Schedule a
+  retention job that deletes rows older than 30 days **after** all
+  cursors have passed them.
+- **Single-process sequential applies.** Fine for ≤50 tables.
+- **Schema changes are partial.** Adding columns auto-detected; renaming
+  / dropping needs human coordination.
+- **Auto-DDL means no PR review for new schemas.** Mitigation: the registry
+  is queryable and is itself audited (it lives in `business_inputs`, where
+  audit triggers are attached — meta!).
+
+---
 
 ## Layout
 
 ```
 sync-service/
 ├── Dockerfile
-├── requirements.txt
-├── config.yaml                       # table list + sync interval
-├── sync.py                           # the pipeline
-└── clickhouse_schemas/               # one DDL file per CH table
-    ├── finance_cost_centers.sql
-    ├── finance_budget_targets.sql
-    ├── sales_regional_targets.sql
-    ├── sales_partner_commissions.sql
-    ├── operations_vendor_master.sql
-    └── operations_maintenance_schedules.sql
+├── requirements.txt    # psycopg2-binary, clickhouse-connect
+├── sync.py             # the whole service (~280 lines)
+└── README.md           # you are here
 ```
 
-### Adding a new table
-
-1. Add it to `config.yaml` (`source`, `destination`, `columns`).
-2. Add `clickhouse_schemas/<destination>.sql` with the table DDL —
-   choose `ORDER BY` and `PARTITION BY` to match real query patterns.
-3. Always include the trailer:
-   ```sql
-   _version DateTime64(6, 'UTC'),
-   _deleted UInt8 DEFAULT 0
-   ```
-   and the engine:
-   ```sql
-   ENGINE = ReplacingMergeTree(_version)
-   ```
-4. Rebuild the image (Docker layer cache can serve a stale config,
-   so use `--no-cache` after editing `config.yaml`).
-5. Restart the container. On first run it will bootstrap the new table
-   and start tracking its cursor.
-
-### Changing the interval
-
-Edit `interval_seconds` in `config.yaml`, then:
-
-```bash
-docker compose build --no-cache sync
-docker compose up -d --force-recreate sync
-```
-
-`--no-cache` is important: Docker's layer cache can skip rebuilding when
-the only change is inside a copied file, leaving the running container
-on the previous value.
-
-## Running manually
-
-```bash
-# Trigger a one-shot run without waiting for the timer
-docker compose exec sync python sync.py --once
-```
-
-Useful for debugging or after editing schemas.
-
-## Schema evolution
-
-If you add a column to a source table:
-
-1. Update `clickhouse_schemas/<table>.sql` to add the column.
-2. Apply the change in ClickHouse manually:
-   ```sql
-   ALTER TABLE finance_cost_centers ADD COLUMN new_col String;
-   ```
-   (The `CREATE TABLE IF NOT EXISTS` in our DDL files won't update
-   existing tables.)
-3. Add the column to the `columns:` list in `config.yaml`.
-4. Restart the sync container. Next run picks up the new column from
-   audit rows.
-
-For renaming or dropping columns: harder — coordinate with downstream
-consumers, plan a migration window.
-
-## Failure modes
-
-| Failure | Behaviour |
-|---|---|
-| Postgres unreachable | Run errors out; retries on next interval. No partial state. |
-| ClickHouse unreachable | Same — surface the error, retry. Cursor not advanced. |
-| Single table errors (e.g. type mismatch) | That table is skipped; others continue. Logged; cursor not advanced for the failing table. |
-| `audit.change_log` truncated | Tables already bootstrapped keep their cursors; new audits since the last cursor are missed — manual reconciliation needed. |
-
-## Limitations / known tech-debt
-
-- **No retry-with-backoff inside a run.** A transient CH blip wastes a
-  whole interval. (Roadmap.)
-- **`CREATE TABLE IF NOT EXISTS` doesn't update existing tables.**
-  Schema changes require manual `ALTER TABLE`.
-- **No prune of `audit.change_log`.** It grows forever. Plan a
-  retention job: delete entries older than 30 days *after* all cursors
-  have passed them.
-- **Single-process synchronous applies.** Fine for ≤50 tables; for
-  bigger fleets, parallelize.
+No config files. The registry IS the config.
