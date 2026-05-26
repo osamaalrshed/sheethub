@@ -110,9 +110,10 @@ services:
       CH_USER:     ${CH_USER}
       CH_PASSWORD: ${CH_PASSWORD}
       CH_DATABASE: ${CH_DATABASE}
-    # If ClickHouse runs on the host (not in this compose), uncomment:
-    # extra_hosts:
-    #   - "host.docker.internal:host-gateway"
+    extra_hosts:
+      # Needed because ClickHouse runs on the host (CH_HOST=host.docker.internal).
+      # Remove if ClickHouse is a service inside this compose.
+      - "host.docker.internal:host-gateway"
     networks:
       - sheetshub-net
 

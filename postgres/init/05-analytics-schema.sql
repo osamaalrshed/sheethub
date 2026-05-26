@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS analytics.partner_commissions   (LIKE sales.partner_c
 CREATE TABLE IF NOT EXISTS analytics.vendor_master         (LIKE operations.vendor_master      INCLUDING DEFAULTS);
 CREATE TABLE IF NOT EXISTS analytics.maintenance_schedules (LIKE operations.maintenance_schedules INCLUDING DEFAULTS);
 
-GRANT USAGE ON SCHEMA analytics TO nocodb_user;
+GRANT USAGE, CREATE ON SCHEMA analytics TO nocodb_user;
 GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA analytics TO nocodb_user;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA analytics TO nocodb_user;
+-- Future tables created by the sync service inherit the right grants
+ALTER DEFAULT PRIVILEGES IN SCHEMA analytics
+  GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON TABLES TO nocodb_user;
