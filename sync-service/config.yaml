@@ -1,15 +1,37 @@
-# Tables to sync from PostgreSQL -> ClickHouse.
-# Format: "schema.table"
-# Only tables with entries in audit.change_log since the last successful sync
-# will actually be reloaded — others are skipped to save time.
+# sync-service configuration — incremental CDC from Postgres → ClickHouse.
+#
+# How it works:
+#   - Every interval_seconds, read NEW rows from audit.change_log (per table).
+#   - Apply each as an append in ClickHouse with _version + _deleted columns.
+#   - ReplacingMergeTree(_version) deduplicates on the ORDER BY key.
+#   - Queries filter `WHERE _deleted = 0` and use `FINAL` (or argMax(_version)).
+#
+# Each ClickHouse table has its own DDL in clickhouse_schemas/ with explicit
+# types, ORDER BY, and PARTITION BY for analytics performance.
+
+interval_seconds: 1800   # 30 minutes
 
 tables:
-  - finance.cost_centers
-  - finance.budget_targets
-  - sales.regional_targets
-  - sales.partner_commissions
-  - operations.vendor_master
-  - operations.maintenance_schedules
+  - source:      finance.cost_centers
+    destination: finance_cost_centers
+    columns:     [code, name, manager_email, status, created_at, updated_at]
 
-# Schedule (production default: 30 minutes)
-interval_seconds: 1800   # 30 minutes
+  - source:      finance.budget_targets
+    destination: finance_budget_targets
+    columns:     [id, year, quarter, department, target_amount, owner, updated_at]
+
+  - source:      sales.regional_targets
+    destination: sales_regional_targets
+    columns:     [id, region, quarter, year, target_revenue, achieved_revenue, updated_at]
+
+  - source:      sales.partner_commissions
+    destination: sales_partner_commissions
+    columns:     [id, partner_name, commission_rate, effective_date, status, updated_at]
+
+  - source:      operations.vendor_master
+    destination: operations_vendor_master
+    columns:     [vendor_id, name, category, status, contact_email, contact_phone, created_at, updated_at]
+
+  - source:      operations.maintenance_schedules
+    destination: operations_maintenance_schedules
+    columns:     [id, equipment_id, frequency_days, last_done, next_due, owner, created_at, updated_at]

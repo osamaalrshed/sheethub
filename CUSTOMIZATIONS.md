@@ -98,13 +98,22 @@ See `nginx/custom.css` for the actual selectors. Categories:
 
 ## Sync services
 
-| Service | Where it runs | Frequency | Purpose |
+| Service | Where it runs | Frequency | Pattern |
 |---|---|---|---|
-| **sync** (production) | `sheetshub-sync` container | every 30 min | Postgres → ClickHouse, audit-driven, truncate-and-reload only changed tables |
-| **realtime-sync** (dev) | `sheetshub-realtime-sync` (only via `docker-compose.dev.yml`) | every 2 s | Postgres → Postgres incremental replay of audit log |
+| **sync** (production) | `sheetshub-sync` container | every 30 min | Incremental CDC: appends each audit-log change to ClickHouse with `_version` + `_deleted`. `ReplacingMergeTree(_version)` deduplicates on merge. |
+| **realtime-sync** (dev) | `sheetshub-realtime-sync` (only via `docker-compose.dev.yml`) | every 2 s | Postgres → Postgres incremental replay of audit log for the analytics schema |
 
-Both read from `audit.change_log` to determine what changed. Interval is in
-each service's `config.yaml`.
+Both read from `audit.change_log` to determine what changed.
+
+ClickHouse queries should filter `_deleted = 0` and use `FINAL` (or
+`argMax(_version)`) to see the current row state. The sync service never
+issues `UPDATE` or `DELETE` against ClickHouse — append-only writes only.
+
+Each ClickHouse table has its own hand-crafted DDL under
+`sync-service/clickhouse_schemas/`. Engineers edit those files to tune
+`ORDER BY` / `PARTITION BY` for analytics access patterns. Adding a new
+table: add a DDL file + entry in `config.yaml`. See
+`sync-service/README.md` for the playbook.
 
 ## Roles in use
 
