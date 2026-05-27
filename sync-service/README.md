@@ -41,23 +41,49 @@ background. Queries use `FINAL WHERE _deleted = 0` to see current state.
 
 ## Add a new table to sync — SQL only, no SSH
 
-From any DBeaver / psql session:
+### The simplest case: NocoDB UI or `CREATE TABLE` is enough
+
+If the new table lives in one of the auto-discovered schemas (see
+`sync_config.settings.auto_register_schemas` — default `finance, sales,
+operations, marketing, hr`), a plain `CREATE TABLE` is all you need:
 
 ```sql
--- 1. Create the source table (must have a PRIMARY KEY)
 CREATE TABLE marketing.campaigns (
     id         SERIAL PRIMARY KEY,
     name       VARCHAR(150) NOT NULL,
     budget     NUMERIC(14, 2) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- 2. Register it for sync. This:
---    - Validates the table exists and has a primary key
---    - Attaches the audit trigger
---    - Adds the registry row
-SELECT audit.register_table('marketing', 'campaigns');
 ```
+
+A Postgres event trigger (`trg_auto_register_table`) fires on
+`CREATE TABLE`, sees the schema is in the allowlist, validates the PK,
+attaches the audit trigger, and inserts the registry row — **all
+without you touching `sync_config.tables`**. This works whether the
+table is created from DBeaver, psql, **or from NocoDB's "Create Table"
+UI**.
+
+Tables named `tmp_*` or starting with `_` are skipped (use this for
+scratch tables that shouldn't sync).
+
+### Adding a schema to the auto-register allowlist
+
+```sql
+UPDATE sync_config.settings
+SET value = 'finance,sales,operations,marketing,hr,product'
+WHERE key = 'auto_register_schemas';
+```
+
+Effective on the next `CREATE TABLE` — no restart.
+
+### Explicit registration (for schemas NOT in the allowlist)
+
+```sql
+CREATE TABLE somewhere_else.thing (id SERIAL PRIMARY KEY, ...);
+SELECT audit.register_table('somewhere_else', 'thing');
+```
+
+### After registration
 
 That's it. Within one sync interval (default 30 min), the sync container:
 
@@ -114,7 +140,37 @@ WHERE source_schema='sales' AND source_table='huge_events';
 
 ## Operations
 
-### Pause a table
+### Pause a table (stop syncing, keep audit log capturing)
+
+```sql
+SELECT audit.pause_sync('marketing', 'campaigns');
+```
+
+Audit trigger keeps recording. ClickHouse data stays put. New audit
+entries accumulate. When you re-enable:
+
+```sql
+SELECT audit.resume_sync('marketing', 'campaigns');
+```
+
+…the next sync run catches up on everything that happened during the pause.
+
+### Stop syncing a table permanently (remove trigger + registry entry)
+
+```sql
+SELECT audit.unregister_table('marketing', 'campaigns');
+```
+
+This:
+- Drops the audit trigger (no more change capture)
+- Removes the entry from `sync_config.tables`
+- **Leaves ClickHouse data intact** — `DROP TABLE marketing_campaigns` in
+  ClickHouse separately if you want a full cleanup.
+
+To re-enable later: `SELECT audit.register_table('marketing', 'campaigns');`
+(or just `CREATE TABLE` again if it was dropped).
+
+### Manual flag toggle (alternative to pause_sync)
 
 ```sql
 UPDATE sync_config.tables
@@ -122,8 +178,7 @@ SET enabled = FALSE
 WHERE source_schema='X' AND source_table='Y';
 ```
 
-CH data stays put; new audit entries accumulate. Set `enabled = TRUE`
-again and sync resumes from where it left off.
+Same effect as `pause_sync()`.
 
 ### See what's being synced
 
