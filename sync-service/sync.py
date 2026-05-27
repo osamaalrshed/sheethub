@@ -233,8 +233,16 @@ _ISO_DATE_LEN = 10
 
 
 def coerce_jsonb_value(v):
-    """JSONB stores timestamps/dates as ISO strings; clickhouse-connect
-    needs Python datetime/date for temporal columns. Convert in-flight."""
+    """Convert JSONB-derived Python values to the shape clickhouse-connect
+    expects for the corresponding ClickHouse column types:
+
+    - dict/list (from a jsonb source column, mapped to CH String) →
+      serialise back to JSON string. Decimals become strings via default=str.
+    - ISO date / datetime strings → Python date / datetime objects (CH
+      DateTime64 / Date columns refuse strings).
+    """
+    if isinstance(v, (dict, list)):
+        return json.dumps(v, default=str)
     if not isinstance(v, str):
         return v
     if len(v) >= _ISO_DATETIME_PREFIX_LEN and v[10] in ('T', ' '):
@@ -287,7 +295,10 @@ def bootstrap(pg, ch, tbl):
 
     if rows:
         now = datetime.now(timezone.utc)
-        ch_rows = [[r[c] for c in col_names] + [now, 0] for r in rows]
+        ch_rows = [
+            [coerce_jsonb_value(r[c]) for c in col_names] + [now, 0]
+            for r in rows
+        ]
         ch.insert(dest, ch_rows, column_names=col_names + ["_version", "_deleted"])
 
     with pg.cursor() as cur:
