@@ -1,13 +1,35 @@
 // admin-detector.js — runs in every page load.
-// 1) Admin detection: adds "is-admin" class to <body> if the logged-in user
-//    matches ADMIN_EMAILS, which disables CSS hides for them.
+// 1) Admin detection: adds "is-admin" class to <body> when the logged-in
+//    user has a NocoDB "super" or "org-level-creator" role, OR their
+//    email is in the explicit ADMIN_EMAILS allowlist. The CSS overlay
+//    skips every hide rule for these users, so they see the full
+//    NocoDB UI (add field, settings, etc.).
 // 2) Logo rebrand: replaces every NocoDB logo image with a "SheetsHub"
 //    wordmark rendered as real HTML so it uses NocoDB's own page typography.
 (function () {
+  // Optional explicit allowlist by email — useful when a user is supposed
+  // to see the admin UI but doesn't have super/creator role yet.
   const ADMIN_EMAILS = ['admin@nocodb.local'];
 
-  function applyAdmin(email) {
-    if (ADMIN_EMAILS.indexOf(email) >= 0) {
+  function isAdmin(user) {
+    if (!user) return false;
+    // Role-based: anyone with super or org-level-creator gets the full UI.
+    // roles can come back as either an object {role_name: true, ...} or
+    // a comma-separated string like "org-level-creator,super".
+    var r = user.roles;
+    if (r && typeof r === 'object') {
+      if (r.super === true || r['org-level-creator'] === true) return true;
+    } else if (typeof r === 'string') {
+      var parts = r.split(',').map(function (s) { return s.trim(); });
+      if (parts.indexOf('super') >= 0 || parts.indexOf('org-level-creator') >= 0) return true;
+    }
+    // Email-based fallback / explicit grant.
+    if (user.email && ADMIN_EMAILS.indexOf(user.email) >= 0) return true;
+    return false;
+  }
+
+  function applyAdmin(user) {
+    if (isAdmin(user)) {
       document.body.classList.add('is-admin');
     }
   }
@@ -15,9 +37,7 @@
   function detect() {
     fetch('/api/v1/auth/user/me', { credentials: 'include' })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (user) {
-        if (user && user.email) applyAdmin(user.email);
-      })
+      .then(function (user) { applyAdmin(user); })
       .catch(function () { /* silent — non-admin stays restricted */ });
   }
 
