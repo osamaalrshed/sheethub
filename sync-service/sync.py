@@ -119,13 +119,13 @@ def introspect_columns(pg, schema: str, table: str):
 def primary_key_columns(pg, schema: str, table: str):
     """Return the primary-key column names, in order."""
     with pg.cursor() as cur:
-        cur.execute(f"""
+        cur.execute("""
             SELECT a.attname
             FROM pg_index i
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-            WHERE i.indrelid = %s::regclass AND i.indisprimary
+            WHERE i.indrelid = format('%%I.%%I', %s, %s)::regclass AND i.indisprimary
             ORDER BY array_position(i.indkey, a.attnum)
-        """, (f"{schema}.{table}",))
+        """, (schema, table))
         return [r[0] for r in cur.fetchall()]
 
 
@@ -395,6 +395,9 @@ def run_once(pg, ch):
             ensure_destination_table(pg, ch, tbl)
             total += apply_incremental(pg, ch, tbl)
         except Exception:
+            # A failed query leaves the PG transaction in an aborted state;
+            # roll it back so the next table starts with a clean slate.
+            pg.rollback()
             log.exception("apply failed for %s.%s — will retry next interval",
                           tbl["source_schema"], tbl["source_table"])
     log.info("run complete — applied=%s rows across %s tables", total, len(registry))
