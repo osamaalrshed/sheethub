@@ -261,26 +261,57 @@ def coerce_jsonb_value(v):
 # ── Per-table work ──────────────────────────────────────────────────────────
 
 def ensure_destination_table(pg, ch, tbl):
-    """Create the ClickHouse mirror table if it doesn't exist."""
+    """Make sure the ClickHouse mirror table is in sync with the source schema:
+      - Create it from scratch if missing.
+      - Otherwise, ALTER TABLE ADD COLUMN for any new columns the source has
+        gained since last sync. Always wrap as Nullable so existing CH rows
+        (which predate the column) read NULL for it.
+
+    Column drops, renames and type changes are NOT auto-handled — the
+    operator must drop+rebootstrap the CH table or run ALTER manually.
+    """
     dest = tbl["destination"]
     schema, table = tbl["source_schema"], tbl["source_table"]
-
-    exists = ch.query(
-        "SELECT count() FROM system.tables WHERE database = %(db)s AND name = %(t)s",
-        parameters={"db": CH["database"], "t": dest},
-    ).first_row[0] > 0
-    if exists:
-        return
 
     columns = introspect_columns(pg, schema, table)
     if not columns:
         raise RuntimeError(f"source table {schema}.{table} has no columns")
 
-    pks = primary_key_columns(pg, schema, table)
-    order_by = tbl["order_by"] or (pks[0] if len(pks) == 1 else f"({', '.join(pks)})")
-    ddl = generate_ddl(dest, columns, order_by, tbl["partition_by"])
-    log.info("creating CH table %s\n%s", dest, ddl)
-    ch.command(ddl)
+    exists = ch.query(
+        "SELECT count() FROM system.tables WHERE database = %(db)s AND name = %(t)s",
+        parameters={"db": CH["database"], "t": dest},
+    ).first_row[0] > 0
+
+    if not exists:
+        pks = primary_key_columns(pg, schema, table)
+        order_by = tbl["order_by"] or (pks[0] if len(pks) == 1 else f"({', '.join(pks)})")
+        ddl = generate_ddl(dest, columns, order_by, tbl["partition_by"])
+        log.info("creating CH table %s\n%s", dest, ddl)
+        ch.command(ddl)
+        return
+
+    # Drift detection: find columns present in PG but not in CH and add them.
+    ch_cols = {
+        r[0] for r in ch.query(
+            "SELECT name FROM system.columns "
+            "WHERE database = %(db)s AND table = %(t)s",
+            parameters={"db": CH["database"], "t": dest},
+        ).result_rows
+    }
+    for col in columns:
+        if col["column_name"] in ch_cols:
+            continue
+        base_type = pg_to_ch_type(
+            col["udt_name"], col["character_maximum_length"],
+            col["numeric_precision"], col["numeric_scale"],
+        )
+        # Existing CH rows have no value for the new column → Nullable.
+        ch.command(
+            f'ALTER TABLE {dest} '
+            f'ADD COLUMN IF NOT EXISTS "{col["column_name"]}" Nullable({base_type})'
+        )
+        log.info("schema drift on %s — added column %s as Nullable(%s)",
+                 dest, col["column_name"], base_type)
 
 
 def bootstrap(pg, ch, tbl):
