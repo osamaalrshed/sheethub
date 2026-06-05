@@ -34,8 +34,17 @@
     }
   }
 
+  // NocoDB authenticates SPA requests via the xc-auth header, not cookies,
+  // and stores the JWT in localStorage under the same "xc-auth" key.
+  // Without sending the header, /api/v1/auth/user/me returns
+  // {roles:{guest:true}}, which the detector reads as "not admin" — so
+  // actual admins are stuck looking at the restricted UI. Forward the
+  // token from localStorage as the header so /me returns the real user.
   function detect() {
-    fetch('/api/v1/auth/user/me', { credentials: 'include' })
+    var headers = {};
+    var t = localStorage.getItem('xc-auth');
+    if (t) headers['xc-auth'] = t;
+    fetch('/api/v1/auth/user/me', { credentials: 'include', headers: headers })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (user) { applyAdmin(user); })
       .catch(function () { /* silent — non-admin stays restricted */ });
