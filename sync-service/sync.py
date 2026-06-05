@@ -269,6 +269,9 @@ def ensure_destination_table(pg, ch, tbl):
 
     Column drops, renames and type changes are NOT auto-handled — the
     operator must drop+rebootstrap the CH table or run ALTER manually.
+    Drops are deliberately one-way: if a column disappears in PG (e.g.
+    because NocoDB renamed it, which it implements as DROP + ADD), CH
+    keeps the old column so the historical data isn't lost.
     """
     dest = tbl["destination"]
     schema, table = tbl["source_schema"], tbl["source_table"]
@@ -387,10 +390,36 @@ def apply_incremental(pg, ch, tbl):
 
 # ── Driver ──────────────────────────────────────────────────────────────────
 
+def has_first_event(pg, schema, table) -> bool:
+    """True if audit.change_log has at least one entry for this source table.
+
+    Used to defer schema bootstrap until the user starts adding data. While a
+    NocoDB user iterates on column names/types, the registered table sits in
+    audit.change_log with zero entries — sync skips it entirely so renames
+    and retypes don't leak into ClickHouse as ghost columns. The first row
+    insert fires the audit trigger, this flips to True, and sync proceeds to
+    introspect the (now stable) schema and bootstrap.
+    """
+    with pg.cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM audit.change_log "
+            "WHERE table_schema = %s AND table_name = %s LIMIT 1)",
+            (schema, table),
+        )
+        return cur.fetchone()[0]
+
+
 def run_once(pg, ch):
     registry = load_registry(pg)
     total = 0
     for tbl in registry:
+        # Deferred bootstrap: a table that has never been bootstrapped AND
+        # has no audit events yet is still being shaped. Skip until data
+        # arrives — that's the natural "schema is ready" signal.
+        if tbl["bootstrapped_at"] is None and not has_first_event(
+            pg, tbl["source_schema"], tbl["source_table"]
+        ):
+            continue
         try:
             ensure_destination_table(pg, ch, tbl)
             total += apply_incremental(pg, ch, tbl)

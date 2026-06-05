@@ -66,6 +66,24 @@ UI**.
 Tables named `tmp_*` or starting with `_` are skipped (use this for
 scratch tables that shouldn't sync).
 
+### Deferred bootstrap: schema iteration doesn't leak into ClickHouse
+
+A registered table is only bootstrapped into ClickHouse once the first
+INSERT fires its audit trigger. Until then — while you're still adding
+columns, renaming them, changing types, etc. — sync **skips** the
+table entirely. The CH mirror appears only when you start adding data,
+which means it's created from the *final* schema in one shot.
+
+This matters because NocoDB implements column renames as DROP + ADD.
+Without deferred bootstrap, every rename would leak a ghost column
+into CH (CH can't tell a rename from an unrelated drop). With it, all
+that DDL noise is absorbed pre-data and CH sees only the final layout.
+
+Trade-off: empty tables never appear in CH. If you genuinely want a
+schema-only mirror before any data exists, insert a placeholder row
+(or `DELETE` it again — the audit log still records the event and
+that's enough to flip the table into "ready" state).
+
 ### Adding a schema to the auto-register allowlist
 
 ```sql
