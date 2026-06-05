@@ -9,7 +9,7 @@
 (function () {
   // Optional explicit allowlist by email — useful when a user is supposed
   // to see the admin UI but doesn't have super/creator role yet.
-  const ADMIN_EMAILS = ['admin@nocodb.local'];
+  const ADMIN_EMAILS = ['admin@nocodb.local', 'biuser@nupco.com'];
 
   function isAdmin(user) {
     if (!user) return false;
