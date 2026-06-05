@@ -91,13 +91,17 @@ BEGIN
         );
     END IF;
 
-    -- 4) Upsert the registry row
+    -- 4) Upsert the registry row.
+    --    NocoDB UI permits spaces and punctuation in table names (e.g. "test 3"),
+    --    but ClickHouse identifiers must match [A-Za-z_][A-Za-z0-9_]*. Sanitize
+    --    the auto-derived destination so the CH DDL is always valid.
     INSERT INTO sync_config.tables (source_schema, source_table, destination,
                                      order_by, partition_by)
     VALUES (
         p_schema,
         p_table,
-        COALESCE(p_destination, p_schema || '_' || p_table),
+        COALESCE(p_destination,
+                 regexp_replace(p_schema || '_' || p_table, '[^A-Za-z0-9_]', '_', 'g')),
         p_order_by,
         p_partition_by
     )
