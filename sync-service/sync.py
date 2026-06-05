@@ -400,10 +400,14 @@ def run_once(pg, ch):
             pg.rollback()
             log.exception("apply failed for %s.%s — will retry next interval",
                           tbl["source_schema"], tbl["source_table"])
-    log.info("run complete — applied=%s rows across %s tables", total, len(registry))
+    # At sub-second/few-second intervals we'd flood the logs with empty
+    # cycles. Only emit the per-run summary when there was actual work.
+    if total > 0:
+        log.info("run complete — applied=%s rows across %s tables", total, len(registry))
 
 
 def one_pass():
+    """Open fresh connections for a single run — used by --once."""
     pg = psycopg2.connect(**PG)
     ch = clickhouse_connect.get_client(**CH)
     try:
@@ -414,13 +418,31 @@ def one_pass():
         ch.close()
 
 
+def _connect():
+    pg = psycopg2.connect(**PG)
+    ch = clickhouse_connect.get_client(**CH)
+    return pg, ch
+
+
 def main():
     log.info("sync starting; interval=%ss", INTERVAL)
+    pg, ch = _connect()
+    ensure_state_table(ch)
     while True:
         try:
-            one_pass()
+            run_once(pg, ch)
         except Exception:
-            log.exception("run errored, will retry in %ss", INTERVAL)
+            # Connection probably died (PG restart, network blip). Drop and
+            # reconnect on the next tick instead of looping on a dead socket.
+            log.exception("run errored, reconnecting before next tick")
+            try: pg.close()
+            except Exception: pass
+            try: ch.close()
+            except Exception: pass
+            try:
+                pg, ch = _connect()
+            except Exception:
+                log.exception("reconnect failed, will retry in %ss", INTERVAL)
         time.sleep(INTERVAL)
 
 

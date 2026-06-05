@@ -3,7 +3,7 @@
 # Services (in startup order):
 #   postgres → nocodb → nginx
 #                  ↓
-#                 sync (Postgres → ClickHouse, every 30 min)
+#                 sync (Postgres → ClickHouse, near-real-time)
 #
 # To run:                      docker compose up -d
 # To stop:                     docker compose down
@@ -91,7 +91,7 @@ services:
     networks:
       - sheetshub-net
 
-  # ── sync — Postgres → ClickHouse (every 30 minutes, audit-driven) ───────
+  # ── sync — Postgres → ClickHouse (near-real-time, audit-driven) ────────
   sync:
     build: ./sync-service
     container_name: sheetshub-sync
@@ -110,6 +110,7 @@ services:
       CH_USER:     ${CH_USER}
       CH_PASSWORD: ${CH_PASSWORD}
       CH_DATABASE: ${CH_DATABASE}
+      SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-3}
     extra_hosts:
       # Needed because ClickHouse runs on the host (CH_HOST=host.docker.internal).
       # Remove if ClickHouse is a service inside this compose.

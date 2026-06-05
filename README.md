@@ -2,7 +2,7 @@
 
 A Dockerized business-data platform: business users edit data in a spreadsheet
 UI ([NocoDB](https://github.com/nocodb/nocodb)) backed by PostgreSQL, with
-every change auto-synced to ClickHouse every 30 minutes for analytics.
+every change auto-synced to ClickHouse in near-real-time (default 3s) for analytics.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -27,7 +27,7 @@ every change auto-synced to ClickHouse every 30 minutes for analytics.
               │                  │       (finance / sales / operations)
               │                  │   - audit.change_log
               └────────┬─────────┘
-                       │  every 30 min, only changed tables
+                       │  every 3s, only changed rows (incremental CDC)
                        ▼
               ┌──────────────────┐
               │  ClickHouse      │  Analytics store
@@ -70,7 +70,7 @@ the admin credentials from `.env`.
 | `postgres`  | `sheetshub-postgres` | `5432`* | Operational DB + NocoDB metadata + audit log |
 | `nocodb`    | `sheetshub-nocodb`   | internal `8080` | Spreadsheet UI |
 | `nginx`     | `sheetshub-nginx`    | `8080`* | Reverse proxy + UI overlay |
-| `sync`      | `sheetshub-sync`     | — | Postgres → ClickHouse, every 30 min |
+| `sync`      | `sheetshub-sync`     | — | Postgres → ClickHouse, near-real-time (every 3s) |
 
 \* Configurable via `POSTGRES_PORT` and `NOCODB_PORT` in `.env`.
 
@@ -81,10 +81,10 @@ the admin credentials from `.env`.
 1. **A user edits a row** in NocoDB through the browser
 2. **NocoDB writes to PostgreSQL** (data lives in `business_inputs.{finance,sales,operations}.*`)
 3. **PostgreSQL triggers** capture the change in `audit.change_log` (`old_data`, `new_data`, `action`, `changed_at`)
-4. **Every 30 minutes**, the `sync` service polls `audit.change_log` per table — if there's been any activity since last sync, it drops and reloads the matching ClickHouse table; otherwise skips
+4. **Every few seconds**, the `sync` service polls `audit.change_log` for new rows since its cursor and appends them to ClickHouse with `_version` + `_deleted` columns. `ReplacingMergeTree(_version)` deduplicates on merge. Queries use `FINAL WHERE _deleted = 0` to see current state.
 5. **Analytics queries** run against ClickHouse, never against the operational PostgreSQL
 
-The 30-minute interval is set in [`sync-service/config.yaml`](sync-service/config.yaml). Change it and restart the `sync` container.
+The polling interval is set by `SYNC_INTERVAL_SECONDS` in `.env` (default 3s). Raise it to 1800 for the old 30-min batch behavior. Change requires `docker compose up -d sync`.
 
 ---
 

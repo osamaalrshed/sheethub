@@ -100,7 +100,7 @@ See `nginx/custom.css` for the actual selectors. Categories:
 
 | Service | Where it runs | Frequency | Pattern |
 |---|---|---|---|
-| **sync** (production) | `sheetshub-sync` container | every 30 min | Incremental CDC: appends each audit-log change to ClickHouse with `_version` + `_deleted`. `ReplacingMergeTree(_version)` deduplicates on merge. |
+| **sync** (production) | `sheetshub-sync` container | every 3s (near-real-time) | Incremental CDC: appends each audit-log change to ClickHouse with `_version` + `_deleted`. `ReplacingMergeTree(_version)` deduplicates on merge. Interval set by `SYNC_INTERVAL_SECONDS` in `.env`. |
 | **realtime-sync** (dev) | `sheetshub-realtime-sync` (only via `docker-compose.dev.yml`) | every 2 s | Postgres → Postgres incremental replay of audit log for the analytics schema |
 
 Both read from `audit.change_log` to determine what changed.

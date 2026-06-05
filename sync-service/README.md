@@ -15,7 +15,7 @@
 │                                                                  │
 │  audit.change_log     ← all INSERT/UPDATE/DELETE events           │
 └─────────────────────────────────────────────────────────────────┘
-                            │ every SYNC_INTERVAL_SECONDS (default 1800)
+                            │ every SYNC_INTERVAL_SECONDS (default 3s)
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │ sync-service (Python container)                                  │
@@ -85,7 +85,7 @@ SELECT audit.register_table('somewhere_else', 'thing');
 
 ### After registration
 
-That's it. Within one sync interval (default 30 min), the sync container:
+That's it. Within one sync interval (default 3s — near-real-time), the sync container:
 
 1. Introspects `marketing.campaigns` columns from `information_schema`
 2. Generates the matching ClickHouse DDL with proper `Decimal` /
@@ -200,7 +200,8 @@ Useful after registering a new table or for debugging.
 
 ### Change the sync interval
 
-`SYNC_INTERVAL_SECONDS` env var (in `docker-compose.yml`). Default 1800.
+`SYNC_INTERVAL_SECONDS` env var (in `.env`, falls back to 3s). Lower for
+tighter latency, raise (e.g. 1800) to batch changes every 30 min instead.
 This is the only setting that still requires a container restart.
 
 ---
